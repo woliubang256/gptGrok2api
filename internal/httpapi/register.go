@@ -730,13 +730,18 @@ func (s *Server) exportSelectedGrokSSO(w http.ResponseWriter, r *http.Request) {
 func (s *Server) registerEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Connection", "keep-alive")
 	// Reverse proxies buffer streamed responses by default; without this the
 	// dashboard's EventSource stays connected but never sees new events.
 	w.Header().Set("X-Accel-Buffering", "no")
+	// No Connection header: it is a hop-by-hop field and illegal over HTTP/2,
+	// where browsers fail the stream with ERR_HTTP2_PROTOCOL_ERROR.
 	flusher, _ := w.(http.Flusher)
 	ticker := time.NewTicker(time.Second)
+	// Idle streams die at proxies' read timeouts; SSE comments are ignored by
+	// EventSource handlers but keep every hop's connection warm.
+	heartbeat := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
+	defer heartbeat.Stop()
 	last := ""
 	for {
 		payload := map[string]any{"register": s.registerStore.Get()}
@@ -752,6 +757,11 @@ func (s *Server) registerEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": ping\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 }
