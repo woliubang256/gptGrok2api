@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -118,6 +119,7 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		}
 		worker := registerruntime.NewWorker(s.registerStore, s.registerRuntime)
 		worker.SetPoolMetrics(s.registerPoolMetrics)
+		worker.SetOnSuccess(s.mirrorRegisteredAccount)
 		env := s.registerEnv
 		env.ResolveProxy = s.resolveRegisterProxy
 		mail, captcha, registrar := registerruntime.ResolveDrivers(config, env, s.requestClient)
@@ -140,6 +142,36 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"register": value})
+}
+
+// mirrorRegisteredAccount pushes a successful registration into the main
+// account pool so it shows up under account management immediately, matching
+// the legacy service's post-registration behavior.
+func (s *Server) mirrorRegisteredAccount(result registerruntime.RegistrationResult) {
+	token := strings.TrimSpace(result.SSO)
+	if token == "" {
+		return
+	}
+	payload := map[string]any{
+		"access_token": token,
+		"email":        strings.TrimSpace(result.Email),
+		"status":       "正常",
+		"enabled":      true,
+		"source_type":  "register",
+	}
+	for key, value := range result.Data {
+		if _, exists := payload[key]; !exists && value != nil {
+			payload[key] = value
+		}
+	}
+	added, _, _, err := s.store.AddAccounts(nil, []map[string]any{payload})
+	if err != nil {
+		log.Printf("register worker: mirror account %s: %v", registerruntime.MaskEmail(result.Email), err)
+		return
+	}
+	if added == 0 {
+		log.Printf("register worker: account %s already in the main pool", registerruntime.MaskEmail(result.Email))
+	}
 }
 
 // resolveRegisterProxy maps the register task's proxy reference to an actual
@@ -697,8 +729,11 @@ func (s *Server) exportSelectedGrokSSO(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) registerEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
+	// Reverse proxies buffer streamed responses by default; without this the
+	// dashboard's EventSource stays connected but never sees new events.
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

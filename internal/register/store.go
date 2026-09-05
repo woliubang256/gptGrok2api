@@ -741,6 +741,11 @@ func publicAccount(item map[string]any) map[string]any {
 	return result
 }
 
+// MaskEmail exposes the log-safe email masking for cross-package callers.
+func MaskEmail(value string) string {
+	return maskEmail(value)
+}
+
 func maskEmail(value string) string {
 	parts := strings.SplitN(value, "@", 2)
 	if len(parts) != 2 {

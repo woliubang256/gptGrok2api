@@ -30,6 +30,8 @@ type Worker struct {
 	// poolMetrics reports (normal accounts, remaining quota) from the main
 	// account pool; it backs the quota/available stop conditions.
 	poolMetrics func() (available, quota int)
+	// onSuccess mirrors a successful registration into the main account pool.
+	onSuccess func(result RegistrationResult)
 }
 
 func NewWorker(store *Store, runtime *Runtime) *Worker {
@@ -40,6 +42,11 @@ func NewWorker(store *Store, runtime *Runtime) *Worker {
 // available stop conditions.
 func (w *Worker) SetPoolMetrics(fn func() (available, quota int)) {
 	w.poolMetrics = fn
+}
+
+// SetOnSuccess wires the post-registration mirror into the main account pool.
+func (w *Worker) SetOnSuccess(fn func(result RegistrationResult)) {
+	w.onSuccess = fn
 }
 
 // Run blocks until the batch reaches its target, the mailbox source runs dry,
@@ -212,6 +219,9 @@ func (w *Worker) registerOne(target string) (string, error) {
 		if consumeErr := consumer.ConsumeMailbox(result.Email); consumeErr != nil {
 			log.Printf("register worker: consume mailbox %s: %v", maskEmail(result.Email), consumeErr)
 		}
+	}
+	if w.onSuccess != nil {
+		w.onSuccess(result)
 	}
 	return result.Email, nil
 }
