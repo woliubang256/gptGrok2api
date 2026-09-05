@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/auucoder/gptgrok2api-go/internal/provider"
+	registerruntime "github.com/auucoder/gptgrok2api-go/internal/register"
 )
 
 func (s *Server) registerAPI(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +107,10 @@ func (s *Server) updateRegisterConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 	if enabled {
+		if s.registerRuntime.Running() {
+			writeJSON(w, http.StatusOK, map[string]any{"register": s.registerStore.Get()})
+			return
+		}
 		config := s.registerStore.Get()
 		target := stringValue(config["target"])
 		if target == "" {
@@ -119,6 +124,7 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 			})
 			return
 		}
+		go registerruntime.NewWorker(s.registerStore, s.registerRuntime).Run()
 	} else {
 		s.registerRuntime.Stop()
 	}

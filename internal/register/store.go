@@ -216,6 +216,107 @@ func (s *Store) QueueOutlookRetry(providerID string, mailboxIDs []string) (map[s
 	return cloneMap(value), nil
 }
 
+// MailboxPool returns the operator-managed mailbox pool consumed by the
+// registration worker. Operators maintain it through POST /api/register with
+// a "mailbox_pool": ["addr@example.com", ...] update.
+func (s *Store) MailboxPool() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, _ := s.getLocked()["mailbox_pool"].([]any)
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if email := stringValue(item); email != "" {
+			result = append(result, email)
+		}
+	}
+	return result
+}
+
+// ConsumeMailbox drops a mailbox from the persisted pool after a successful
+// registration so a restart cannot reuse it for a second account.
+func (s *Store) ConsumeMailbox(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := s.getLocked()
+	raw, _ := value["mailbox_pool"].([]any)
+	kept := make([]any, 0, len(raw))
+	for _, item := range raw {
+		if strings.EqualFold(stringValue(item), email) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == len(raw) {
+		return nil
+	}
+	value["mailbox_pool"] = kept
+	return writeJSON0600(s.configPath, value)
+}
+
+// AppendLog appends a control-plane log entry using the legacy
+// {time, text, level} shape rendered by the admin UI, capped at 300 rows.
+func (s *Store) AppendLog(text, level string) {
+	if strings.TrimSpace(level) == "" {
+		level = "info"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := s.getLocked()
+	raw, _ := value["logs"].([]any)
+	entry := map[string]any{"time": time.Now().UTC().Format(time.RFC3339), "text": strings.TrimSpace(text), "level": level}
+	if len(raw) >= 300 {
+		raw = raw[len(raw)-299:]
+	}
+	value["logs"] = append(raw, entry)
+	_ = writeJSON0600(s.configPath, value)
+}
+
+// UpdateStats applies fn to the persisted stats map {done, success, fail,
+// running} and writes the config back.
+func (s *Store) UpdateStats(fn func(map[string]any)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := s.getLocked()
+	stats, _ := value["stats"].(map[string]any)
+	if stats == nil {
+		stats = map[string]any{}
+	}
+	fn(stats)
+	value["stats"] = stats
+	_ = writeJSON0600(s.configPath, value)
+}
+
+// UpsertAccount archives a registration result keyed by email, replacing any
+// previous record for the same mailbox.
+func (s *Store) UpsertAccount(item map[string]any) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.loadAccountsLocked()
+	if err != nil {
+		return false, err
+	}
+	email := strings.ToLower(stringValue(item["email"]))
+	created := true
+	for index, existing := range items {
+		if email != "" && strings.ToLower(stringValue(existing["email"])) == email {
+			items[index] = item
+			created = false
+			break
+		}
+	}
+	if created {
+		items = append(items, item)
+	}
+	if err := writeJSON0600(s.accountsPath, map[string]any{"items": items}); err != nil {
+		return false, err
+	}
+	return created, nil
+}
+
 func (s *Store) setEnabled(enabled bool) (map[string]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -49,6 +49,14 @@ type Runtime struct {
 
 func NewRuntime() *Runtime { return &Runtime{} }
 
+// Running reports whether the executor accepted a Start and has not been
+// stopped or finished yet. The worker loop polls it between registrations.
+func (r *Runtime) Running() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.running
+}
+
 func (r *Runtime) SetDrivers(mail MailProvider, captcha CaptchaSolver, registrar Registrar) {
 	r.mu.Lock()
 	r.Mail, r.Captcha, r.Registrar = mail, captcha, registrar

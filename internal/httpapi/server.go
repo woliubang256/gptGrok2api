@@ -136,6 +136,14 @@ func New(cfg config.Config) *Server {
 		registerRuntime:    registerruntime.NewRuntime(),
 	}
 	server.openAIChat = provider.NewOpenAIChat(server.openAIImage)
+	switch {
+	case cfg.RegisterMailURL != "" && cfg.RegisterCaptchaURL != "" && cfg.RegisterDriverURL != "":
+		drivers := registerruntime.NewHTTPDrivers(cfg.RegisterMailURL, cfg.RegisterCaptchaURL, cfg.RegisterDriverURL, cfg.RegisterDriverKey, requestClient)
+		server.registerRuntime.SetDrivers(drivers, drivers, drivers)
+		log.Printf("Registration executor configured: mail=%s captcha=%s driver=%s", cfg.RegisterMailURL, cfg.RegisterCaptchaURL, cfg.RegisterDriverURL)
+	case cfg.RegisterMailURL != "" || cfg.RegisterCaptchaURL != "" || cfg.RegisterDriverURL != "":
+		log.Printf("Registration executor disabled: GO_REGISTER_MAIL_URL, GO_REGISTER_CAPTCHA_URL and GO_REGISTER_DRIVER_URL must all be set (mail=%t captcha=%t driver=%t)", cfg.RegisterMailURL != "", cfg.RegisterCaptchaURL != "", cfg.RegisterDriverURL != "")
+	}
 	proxyManager.SetImageNodeResultCallback(server.persistProxyGroupRuntimeResult)
 	server.accountPool.SetInvalidCallback(server.maybeAutoRemoveInvalidAccount)
 	server.loadEditableFileTasks()
