@@ -116,6 +116,8 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		if target == "" {
 			target = "grok"
 		}
+		mail, captcha, registrar := registerruntime.ResolveDrivers(config, s.registerEnv, s.requestClient)
+		s.registerRuntime.SetDrivers(mail, captcha, registrar)
 		if err := s.registerRuntime.Start(target); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"ok":       false,

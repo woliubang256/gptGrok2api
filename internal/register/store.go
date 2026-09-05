@@ -694,6 +694,29 @@ func intValue(value any) int {
 	}
 }
 
+func anyList(value any) []any {
+	if typed, ok := value.([]any); ok {
+		return typed
+	}
+	return nil
+}
+
+func secondsDuration(value any, fallback int) time.Duration {
+	seconds := 0
+	switch typed := value.(type) {
+	case float64:
+		seconds = int(typed)
+	case int:
+		seconds = typed
+	case string:
+		_, _ = fmt.Sscanf(strings.TrimSpace(typed), "%d", &seconds)
+	}
+	if seconds <= 0 {
+		return time.Duration(fallback) * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func stringAnyList(values []string) []any {
 	result := make([]any, 0, len(values))
 	for _, value := range values {

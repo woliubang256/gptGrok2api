@@ -13,12 +13,17 @@ import (
 const (
 	workerMaxThreads          = 16
 	workerRegistrationTimeout = 15 * time.Minute
+	workerMaxConsecutiveFails = 5
 )
 
-// Worker drives one registration batch: it consumes the operator-managed
-// mailbox pool, executes registrations through the configured Runtime drivers,
-// archives successful accounts, and mirrors progress into the persisted stats
-// and logs that the admin UI renders.
+// ErrMailboxPoolExhausted is returned by pool-backed mailbox sources when no
+// unused address remains; it ends the batch instead of counting as a failure.
+var ErrMailboxPoolExhausted = errors.New("mailbox pool exhausted")
+
+// Worker drives one registration batch: it leases mailboxes, executes
+// registrations through the configured Runtime drivers, archives successful
+// accounts, and mirrors progress into the persisted stats and logs that the
+// admin UI renders.
 type Worker struct {
 	store   *Store
 	runtime *Runtime
@@ -28,8 +33,9 @@ func NewWorker(store *Store, runtime *Runtime) *Worker {
 	return &Worker{store: store, runtime: runtime}
 }
 
-// Run blocks until the batch reaches its target, exhausts the mailbox pool, or
-// Stop is invoked. It is intended to run in its own goroutine.
+// Run blocks until the batch reaches its target, the mailbox source runs dry,
+// too many registrations fail in a row, or Stop is invoked. It is intended to
+// run in its own goroutine.
 func (w *Worker) Run() {
 	if !w.runtime.Running() {
 		return
@@ -49,53 +55,31 @@ func (w *Worker) Run() {
 		threads = workerMaxThreads
 	}
 	total := intValue(config["total"])
-	pool := w.store.MailboxPool()
-	if len(pool) == 0 {
-		w.finish("注册任务未启动：邮箱池为空，请通过 POST /api/register 配置 mailbox_pool", "yellow")
-		return
-	}
 
-	w.store.AppendLog(fmt.Sprintf("注册任务启动：target=%s threads=%d total=%d mailboxes=%d", target, threads, total, len(pool)), "info")
+	w.store.AppendLog(fmt.Sprintf("注册任务启动：target=%s threads=%d total=%d", target, threads, total), "info")
 	var (
-		mu        sync.Mutex
-		attempted = map[string]bool{}
-		success   = 0
-		fail      = 0
-		next      = 0
-		abort     = false
+		mu                    sync.Mutex
+		success               = 0
+		fail                  = 0
+		consecutiveFails      = 0
+		poolExhausted         = false
+		executorMisconfigured = false
 	)
 	var wg sync.WaitGroup
-	for worker := 0; worker < threads && !abort; worker++ {
+	for worker := 0; worker < threads; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for {
-				if abort {
-					return
-				}
-				if total > 0 {
-					mu.Lock()
-					done := success >= total
-					mu.Unlock()
-					if done {
-						return
-					}
-				}
 				mu.Lock()
-				for next < len(pool) && attempted[pool[next]] {
-					next++
-				}
-				if next >= len(pool) {
+				if total > 0 && success >= total || poolExhausted || executorMisconfigured || consecutiveFails >= workerMaxConsecutiveFails {
 					mu.Unlock()
 					return
 				}
-				email := pool[next]
-				next++
-				attempted[email] = true
 				w.store.UpdateStats(func(stats map[string]any) { stats["running"] = intValue(stats["running"]) + 1 })
 				mu.Unlock()
 
-				err := w.registerOne(target, email)
+				email, err := w.registerOne(target)
 				w.store.UpdateStats(func(stats map[string]any) {
 					stats["running"] = maxInt(intValue(stats["running"])-1, 0)
 					stats["done"] = intValue(stats["done"]) + 1
@@ -105,68 +89,84 @@ func (w *Worker) Run() {
 						stats["fail"] = intValue(stats["fail"]) + 1
 					}
 				})
-				if err != nil {
-					if errors.Is(err, ErrExecutorNotConfigured) {
-						mu.Lock()
-						abort = true
-						mu.Unlock()
-						w.store.AppendLog("注册执行器未配置完整，任务中止", "red")
-						log.Printf("register worker aborted: %v", err)
-						return
-					}
-					mu.Lock()
-					fail++
-					mu.Unlock()
-					w.store.AppendLog(fmt.Sprintf("注册失败 %s：%v", maskEmail(email), err), "red")
-					continue
-				}
 				mu.Lock()
-				success++
-				mu.Unlock()
-				if consumeErr := w.store.ConsumeMailbox(email); consumeErr != nil {
-					log.Printf("register worker: consume mailbox %s: %v", maskEmail(email), consumeErr)
+				switch {
+				case err == nil:
+					success++
+					consecutiveFails = 0
+				case errors.Is(err, ErrMailboxPoolExhausted):
+					poolExhausted = true
+				case errors.Is(err, ErrExecutorNotConfigured):
+					executorMisconfigured = true
+				default:
+					fail++
+					consecutiveFails++
 				}
-				w.store.AppendLog(fmt.Sprintf("注册成功：%s", maskEmail(email)), "green")
+				mu.Unlock()
+
+				switch {				case err == nil:
+					w.store.AppendLog(fmt.Sprintf("注册成功：%s", maskEmail(email)), "green")
+				case errors.Is(err, ErrMailboxPoolExhausted):
+					w.store.AppendLog("邮箱池已用尽，任务结束", "yellow")
+				case errors.Is(err, ErrExecutorNotConfigured):
+					w.store.AppendLog("执行器配置不完整，任务中止", "red")
+				default:
+					w.store.AppendLog(fmt.Sprintf("注册失败：%v", err), "red")
+				}
 			}
 		}()
 	}
 	wg.Wait()
 
+	mu.Lock()
 	message := fmt.Sprintf("注册任务结束：成功 %d，失败 %d", success, fail)
-	if total > 0 && success < total {
-		message += fmt.Sprintf("（目标 %d，邮箱池已用尽）", total)
+	if executorMisconfigured {
+		message = fmt.Sprintf("注册任务中止：执行器配置不完整（成功 %d，失败 %d），请检查邮箱来源、过码和注册驱动配置", success, fail)
+	} else if total > 0 && success < total {
+		message += fmt.Sprintf("（目标 %d）", total)
 	}
+	mu.Unlock()
 	w.finish(message, "info")
 }
 
-func (w *Worker) registerOne(target, email string) error {
+func consecutiveFailsReached(stopped, success bool) bool {
+	return stopped && !success
+}
+
+// registerOne executes a single registration and archives the result. It
+// returns the registration email for logging.
+func (w *Worker) registerOne(target string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), workerRegistrationTimeout)
 	defer cancel()
-	result, err := w.runtime.Execute(ctx, RegistrationRequest{Target: target, Email: email})
+	result, err := w.runtime.Execute(ctx, RegistrationRequest{Target: target})
 	if err != nil {
-		return err
+		return "", err
 	}
 	item := map[string]any{
-		"id":         NewID(),
-		"email":      email,
-		"sso":        result.SSO,
-		"status":     firstNonEmptyText(result.Status, "active"),
-		"enabled":    true,
+		"id":          NewID(),
+		"email":       result.Email,
+		"sso":         result.SSO,
+		"status":      firstNonEmptyText(result.Status, "active"),
+		"enabled":     true,
 		"source_type": "register",
-		"target":     target,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"target":      target,
+		"created_at":  time.Now().UTC().Format(time.RFC3339),
+		"updated_at":  time.Now().UTC().Format(time.RFC3339),
 	}
 	for key, value := range result.Data {
 		if _, exists := item[key]; !exists && value != nil {
 			item[key] = value
 		}
 	}
-	if result.Email != "" {
-		item["email"] = result.Email
+	if _, err = w.store.UpsertAccount(item); err != nil {
+		return result.Email, err
 	}
-	_, err = w.store.UpsertAccount(item)
-	return err
+	if consumer, ok := w.runtime.MailConsumer(); ok && consumer != nil {
+		if consumeErr := consumer.ConsumeMailbox(result.Email); consumeErr != nil {
+			log.Printf("register worker: consume mailbox %s: %v", maskEmail(result.Email), consumeErr)
+		}
+	}
+	return result.Email, nil
 }
 
 // finish marks the batch as no longer running, clears the live counter, and

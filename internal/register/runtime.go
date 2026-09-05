@@ -22,24 +22,44 @@ type RegistrationResult struct {
 	Data   map[string]any
 }
 
-// MailProvider, CaptchaSolver and Registrar are deliberately small seams for
-// production integrations. The default binary does not claim to solve CAPTCHAs
-// or create third-party accounts until concrete providers are configured.
-type MailProvider interface {
-	RequestCode(context.Context, string) (string, error)
+// Mailbox is a mailbox leased from a MailboxSource for one registration.
+type Mailbox struct {
+	Address string
+	Token   string
+	Since   time.Time
 }
 
+// MailboxSource leases mailboxes and waits for the target's verification
+// code. WaitForCode is called after Registrar.Start has triggered the mail,
+// so implementations are expected to poll until the code arrives.
+type MailboxSource interface {
+	CreateMailbox(ctx context.Context, target string) (Mailbox, error)
+	WaitForCode(ctx context.Context, mailbox Mailbox) (string, error)
+}
+
+// MailboxConsumer is implemented by mailbox sources backed by a finite pool:
+// successful registrations retire the address permanently.
+type MailboxConsumer interface {
+	ConsumeMailbox(email string) error
+}
+
+// CaptchaSolver produces a captcha token for the target's signup flow.
 type CaptchaSolver interface {
-	Solve(context.Context, string) (string, error)
+	Solve(ctx context.Context, target string) (string, error)
 }
 
+// Registrar drives the signup protocol in two phases: Start bootstraps the
+// session and triggers the verification email; Complete submits the code and
+// captcha token and returns the created account. Implementations hold their
+// own session state keyed by the email between the two calls.
 type Registrar interface {
-	Register(context.Context, RegistrationRequest, string, string) (RegistrationResult, error)
+	Start(ctx context.Context, request RegistrationRequest) error
+	Complete(ctx context.Context, request RegistrationRequest, code, captchaToken string) (RegistrationResult, error)
 }
 
 type Runtime struct {
 	mu        sync.RWMutex
-	Mail      MailProvider
+	Mail      MailboxSource
 	Captcha   CaptchaSolver
 	Registrar Registrar
 	running   bool
@@ -57,19 +77,37 @@ func (r *Runtime) Running() bool {
 	return r.running
 }
 
-func (r *Runtime) SetDrivers(mail MailProvider, captcha CaptchaSolver, registrar Registrar) {
+func (r *Runtime) SetDrivers(mail MailboxSource, captcha CaptchaSolver, registrar Registrar) {
 	r.mu.Lock()
 	r.Mail, r.Captcha, r.Registrar = mail, captcha, registrar
 	r.mu.Unlock()
 }
 
+// MailConsumer exposes the pool-retirement hook when the wired mailbox source
+// is backed by a finite pool.
+func (r *Runtime) MailConsumer() (MailboxConsumer, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	consumer, ok := r.Mail.(MailboxConsumer)
+	return consumer, ok
+}
+
 func (r *Runtime) Ready(target string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !strings.EqualFold(strings.TrimSpace(target), "grok") && !strings.EqualFold(strings.TrimSpace(target), "openai") {
+	return r.ReadyLocked(target)
+}
+
+func (r *Runtime) ReadyLocked(target string) bool {
+	if !validTarget(target) {
 		return false
 	}
 	return r.Mail != nil && r.Captcha != nil && r.Registrar != nil
+}
+
+func validTarget(target string) bool {
+	value := strings.EqualFold(strings.TrimSpace(target), "grok")
+	return value || strings.EqualFold(strings.TrimSpace(target), "openai")
 }
 
 func (r *Runtime) Start(target string) error {
@@ -85,36 +123,42 @@ func (r *Runtime) Start(target string) error {
 	return nil
 }
 
-func (r *Runtime) ReadyLocked(target string) bool {
-	if !strings.EqualFold(strings.TrimSpace(target), "grok") && !strings.EqualFold(strings.TrimSpace(target), "openai") {
-		return false
-	}
-	return r.Mail != nil && r.Captcha != nil && r.Registrar != nil
-}
-
 func (r *Runtime) Stop() {
 	r.mu.Lock()
 	r.running = false
 	r.mu.Unlock()
 }
 
+// Execute runs one registration: lease a mailbox, trigger the verification
+// mail, wait for the code, solve the captcha, and finalize the account.
 func (r *Runtime) Execute(ctx context.Context, request RegistrationRequest) (RegistrationResult, error) {
 	r.mu.RLock()
 	mail, captcha, registrar := r.Mail, r.Captcha, r.Registrar
-	running := r.running
 	r.mu.RUnlock()
-	if !running || mail == nil || captcha == nil || registrar == nil {
+	if mail == nil || captcha == nil || registrar == nil {
 		return RegistrationResult{}, ErrExecutorNotConfigured
 	}
-	code, err := mail.RequestCode(ctx, request.Email)
+	mailbox, err := mail.CreateMailbox(ctx, request.Target)
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	challenge, err := captcha.Solve(ctx, request.Target)
+	request.Email = mailbox.Address
+	if err := registrar.Start(ctx, request); err != nil {
+		return RegistrationResult{}, err
+	}
+	code, err := mail.WaitForCode(ctx, mailbox)
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	return registrar.Register(ctx, request, code, challenge)
+	token, err := captcha.Solve(ctx, request.Target)
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	result, err := registrar.Complete(ctx, request, code, token)
+	if err == nil && result.Email == "" {
+		result.Email = mailbox.Address
+	}
+	return result, err
 }
 
 func (r *Runtime) Status(target string) map[string]any {
