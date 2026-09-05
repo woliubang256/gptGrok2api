@@ -115,6 +115,7 @@ func (s *Server) streamOpenAIChat(w http.ResponseWriter, r *http.Request, reques
 			break
 		}
 		s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+		s.syncAccountQuotaAsync(lease.Account)
 		lastErr = nil
 		break
 	}
@@ -199,6 +200,7 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 			break
 		}
 		s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+		s.syncAccountQuotaAsync(lease.Account)
 		lastErr = nil
 		break
 	}
@@ -223,6 +225,7 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 	}
 	s.stageRequestMonitor(r, "image_download_done", 95, map[string]any{"total_ms": time.Since(started).Milliseconds()})
 	s.accountPool.Feedback(selected, http.StatusOK, nil)
+	s.syncAccountQuotaAsync(selected)
 	content := strings.Join(parts, "\n")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": newChatID(), "object": "chat.completion", "created": time.Now().Unix(), "model": request.Model,

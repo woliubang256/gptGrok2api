@@ -61,6 +61,8 @@ type Server struct {
 	registerRuntime    *registerruntime.Runtime
 	registerEnv        registerruntime.DriverEnv
 	monitor            *runtimeMonitor
+	quotaSyncMu        sync.Mutex
+	quotaSyncLast      map[string]time.Time
 	logMu              sync.Mutex
 	videoMu            sync.RWMutex
 	videoJobs          map[string]*videoJob
@@ -451,7 +453,11 @@ func (s *Server) shouldMonitorRequest(r *http.Request) bool {
 		return false
 	}
 	path := strings.TrimRight(r.URL.Path, "/")
-	return path == "/v1/images/generations" || path == "/v1/images/edits" || path == "/v1/chat/completions"
+	switch path {
+	case "/v1/images/generations", "/v1/images/edits", "/v1/chat/completions", "/v1/responses", "/v1/messages":
+		return true
+	}
+	return false
 }
 
 func (s *Server) withRequestMonitor(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -928,6 +934,7 @@ func (s *Server) completeChat(w http.ResponseWriter, r *http.Request, request pr
 			break
 		}
 		s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+		s.syncAccountQuotaAsync(lease.Account)
 		lastErr = nil
 		break
 	}
@@ -1091,6 +1098,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, request prot
 			break
 		}
 		s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+		s.syncAccountQuotaAsync(lease.Account)
 		lastErr = nil
 		break
 	}

@@ -167,6 +167,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		data = append(data, value)
 	}
 	s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+	s.syncAccountQuotaAsync(lease.Account)
 	s.stageRequestMonitor(r, "image_single_done", 99, map[string]any{"total_ms": s.requestMonitorElapsed(r), "response_ms": s.requestMonitorElapsed(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
@@ -261,6 +262,7 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 				s.accountPool.Release(lease)
 				s.stageRequestMonitor(r, "image_response_ready", 95, map[string]any{"response_ms": time.Since(accountStarted).Milliseconds()})
 				s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+				s.syncAccountQuotaAsync(lease.Account)
 				results[index] = items
 				return
 			}
@@ -833,6 +835,7 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		data = append(data, value)
 	}
 	s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+	s.syncAccountQuotaAsync(lease.Account)
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
 
