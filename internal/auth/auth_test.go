@@ -44,3 +44,15 @@ func TestSeparateAPIKeyDoesNotAuthorizeAdminRoutes(t *testing.T) {
 		t.Fatalf("expected user identity, got %#v", identity)
 	}
 }
+
+func TestAdminKeyAcceptedFromEventSourceQueryToken(t *testing.T) {
+	validator := New("api-secret", "admin-secret", "", false, nil)
+	request, _ := http.NewRequest(http.MethodGet, "/api/register/events?token=admin-secret", nil)
+	if !validator.ValidAdminRequest(request) {
+		t.Fatal("expected ?token= to authorize admin SSE streams")
+	}
+	request, _ = http.NewRequest(http.MethodGet, "/api/register/events?token=api-secret", nil)
+	if validator.ValidAdminRequest(request) {
+		t.Fatal("expected ?token= api key to be rejected for admin access")
+	}
+}

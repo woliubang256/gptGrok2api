@@ -45,7 +45,13 @@ func (v *Validator) AdminKey(r *http.Request) string {
 	if token := v.APIKey(r); token != "" {
 		return token
 	}
-	return strings.TrimSpace(r.URL.Query().Get("app_key"))
+	// Server-sent event streams are consumed by EventSource, which cannot set
+	// custom headers; the frontend passes the admin key as ?token= instead.
+	query := r.URL.Query()
+	if token := strings.TrimSpace(query.Get("token")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(query.Get("app_key"))
 }
 
 func (v *Validator) ValidAPIRequest(r *http.Request) bool {
