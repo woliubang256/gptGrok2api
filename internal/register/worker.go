@@ -27,10 +27,19 @@ var ErrMailboxPoolExhausted = errors.New("mailbox pool exhausted")
 type Worker struct {
 	store   *Store
 	runtime *Runtime
+	// poolMetrics reports (normal accounts, remaining quota) from the main
+	// account pool; it backs the quota/available stop conditions.
+	poolMetrics func() (available, quota int)
 }
 
 func NewWorker(store *Store, runtime *Runtime) *Worker {
 	return &Worker{store: store, runtime: runtime}
+}
+
+// SetPoolMetrics wires the main account pool stats used by the quota and
+// available stop conditions.
+func (w *Worker) SetPoolMetrics(fn func() (available, quota int)) {
+	w.poolMetrics = fn
 }
 
 // Run blocks until the batch reaches its target, the mailbox source runs dry,
@@ -45,10 +54,29 @@ func (w *Worker) Run() {
 	if target == "" {
 		target = "grok"
 	}
+	// mode is a stop condition, mirroring the admin UI: total = register a
+	// fixed count, quota = stop once the pool's remaining quota reaches
+	// target_quota, available = stop once normal accounts reach
+	// target_available (both pool modes are openai-only upstream).
 	mode := strings.ToLower(strings.TrimSpace(stringValue(config["mode"])))
-	if mode != "" && mode != "register" {
-		w.finish(fmt.Sprintf("注册任务未启动：暂不支持模式 %q，Go 执行器仅支持 register", mode), "yellow")
+	switch mode {
+	case "quota", "available":
+	default:
+		mode = "total"
+	}
+	if strings.EqualFold(target, "grok") && mode != "total" {
+		w.store.AppendLog("grok 目标仅支持按数量注册，已按 total 模式执行", "yellow")
+		mode = "total"
+	}
+	targetQuota := maxInt(intValue(config["target_quota"]), 1)
+	targetAvailable := maxInt(intValue(config["target_available"]), 1)
+	if (mode == "quota" || mode == "available") && w.poolMetrics == nil {
+		w.finish("注册任务未启动：号池指标不可用，quota/available 模式需要主账号库", "yellow")
 		return
+	}
+	if mode != "total" {
+		available, quota := w.poolMetrics()
+		w.store.AppendLog(fmt.Sprintf("检查号池：当前正常账号=%d，当前剩余额度=%d（模式 %s）", available, quota, mode), "info")
 	}
 	threads := positiveValue(config["threads"], 2)
 	if threads > workerMaxThreads {
@@ -65,6 +93,19 @@ func (w *Worker) Run() {
 		poolExhausted         = false
 		executorMisconfigured = false
 	)
+	// reached reports whether the selected stop condition is satisfied. Pool
+	// modes check the live main-account metrics; total mode counts successes.
+	reached := func() bool {
+		switch mode {
+		case "quota":
+			_, quota := w.poolMetrics()
+			return quota >= targetQuota
+		case "available":
+			available, _ := w.poolMetrics()
+			return available >= targetAvailable
+		}
+		return total > 0 && success >= total
+	}
 	var wg sync.WaitGroup
 	for worker := 0; worker < threads; worker++ {
 		wg.Add(1)
@@ -72,7 +113,7 @@ func (w *Worker) Run() {
 			defer wg.Done()
 			for {
 				mu.Lock()
-				if total > 0 && success >= total || poolExhausted || executorMisconfigured || consecutiveFails >= workerMaxConsecutiveFails {
+				if reached() || poolExhausted || executorMisconfigured || consecutiveFails >= workerMaxConsecutiveFails {
 					mu.Unlock()
 					return
 				}
@@ -122,6 +163,12 @@ func (w *Worker) Run() {
 	message := fmt.Sprintf("注册任务结束：成功 %d，失败 %d", success, fail)
 	if executorMisconfigured {
 		message = fmt.Sprintf("注册任务中止：执行器配置不完整（成功 %d，失败 %d），请检查邮箱来源、过码和注册驱动配置", success, fail)
+	} else if mode != "total" && reached() {
+		if mode == "quota" {
+			message += fmt.Sprintf("（已达到目标额度 %d）", targetQuota)
+		} else {
+			message += fmt.Sprintf("（已达到目标账号数 %d）", targetAvailable)
+		}
 	} else if total > 0 && success < total {
 		message += fmt.Sprintf("（目标 %d）", total)
 	}

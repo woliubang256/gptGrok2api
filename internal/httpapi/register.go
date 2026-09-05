@@ -126,7 +126,9 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 			})
 			return
 		}
-		go registerruntime.NewWorker(s.registerStore, s.registerRuntime).Run()
+		worker := registerruntime.NewWorker(s.registerStore, s.registerRuntime)
+		worker.SetPoolMetrics(s.registerPoolMetrics)
+		go worker.Run()
 	} else {
 		s.registerRuntime.Stop()
 	}
@@ -136,6 +138,34 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"register": value})
+}
+
+// registerPoolMetrics mirrors the legacy account-pool evaluation for the
+// register stop conditions: normal accounts count and their remaining quota.
+func (s *Server) registerPoolMetrics() (int, int) {
+	items, err := s.store.AccountList()
+	if err != nil {
+		return 0, 0
+	}
+	available, quota := 0, 0
+	for _, item := range items {
+		if !boolValue(item["enabled"], true) {
+			continue
+		}
+		status := strings.ToLower(stringValue(item["status"]))
+		if status != "" && status != "正常" && status != "active" && status != "normal" {
+			continue
+		}
+		accountQuota := intValue(item["quota"])
+		if accountQuota <= 0 && !boolValue(item["survival_alive"], false) {
+			continue
+		}
+		available++
+		if accountQuota > 0 {
+			quota += accountQuota
+		}
+	}
+	return available, quota
 }
 
 func (s *Server) resetRegister(w http.ResponseWriter) {

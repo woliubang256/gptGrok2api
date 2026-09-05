@@ -620,7 +620,7 @@ func defaultConfig() map[string]any {
 		"target":                   "grok",
 		"total":                    0,
 		"threads":                  2,
-		"mode":                     "register",
+		"mode":                     "total",
 		"target_quota":             0,
 		"target_available":         0,
 		"check_interval":           60,

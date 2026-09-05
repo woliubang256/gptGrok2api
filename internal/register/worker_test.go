@@ -261,6 +261,76 @@ func TestOpenAITargetNeedsNoCaptcha(t *testing.T) {
 	}
 }
 
+func TestWorkerStopsOnAvailableTarget(t *testing.T) {
+	root := t.TempDir()
+	store := New(filepath.Join(root, "register.json"), filepath.Join(root, "grok_accounts.json"))
+
+	mailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": "998877"})
+	}))
+	defer mailServer.Close()
+	driverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/complete" {
+			var payload struct {
+				Email string `json:"email"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"account": map[string]any{"email": payload.Email, "sso": "sso-1", "status": "active"}})
+		} else {
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer driverServer.Close()
+	solverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"solved": true, "token": "tok"})
+	}))
+	defer solverServer.Close()
+
+	if _, err := store.Update(map[string]any{
+		"target":           "openai",
+		"mailbox_pool":     []any{"a@example.com", "b@example.com"},
+		"mode":             "available",
+		"target_available": 1,
+		"threads":          1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env := DriverEnv{
+		MailURL: mailServer.URL, CaptchaURL: solverServer.URL, DriverURL: driverServer.URL,
+		MailboxPool: store.MailboxPool, ConsumeMailbox: store.ConsumeMailbox,
+	}
+	mail, captcha, registrar := ResolveDrivers(store.Get(), env, nil)
+	runtime := NewRuntime()
+	runtime.SetDrivers(mail, captcha, registrar)
+	if err := runtime.Start("openai"); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	worker := NewWorker(store, runtime)
+	// Pool metrics follow the register archive: each success raises the
+	// normal-account count.
+	worker.SetPoolMetrics(func() (int, int) {
+		items, _, _, err := store.ListAccounts("", "active")
+		if err != nil {
+			return 0, 0
+		}
+		return len(items), 0
+	})
+	worker.Run()
+
+	stats, _ := store.Get()["stats"].(map[string]any)
+	if intValue(stats["success"]) != 1 {
+		logs, _ := json.Marshal(store.Get()["logs"])
+		t.Fatalf("expected one registration before reaching the target: %#v; logs=%s", stats, logs)
+	}
+	if pool := store.MailboxPool(); len(pool) != 1 {
+		t.Fatalf("second mailbox should remain untouched: %#v", pool)
+	}
+	logs, _ := json.Marshal(store.Get()["logs"])
+	if !strings.Contains(string(logs), "已达到目标账号数") {
+		t.Fatalf("expected target-reached closing log, got %s", logs)
+	}
+}
+
 func TestExtractVerificationCode(t *testing.T) {
 	cases := []struct {
 		name    string
