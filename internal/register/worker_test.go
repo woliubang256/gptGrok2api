@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -269,8 +270,10 @@ func TestWorkerStopsOnAvailableTarget(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": "998877"})
 	}))
 	defer mailServer.Close()
+	var completions atomic.Int32
 	driverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/complete" {
+			completions.Add(1)
 			var payload struct {
 				Email string `json:"email"`
 			}
@@ -306,14 +309,10 @@ func TestWorkerStopsOnAvailableTarget(t *testing.T) {
 		t.Fatalf("start failed: %v", err)
 	}
 	worker := NewWorker(store, runtime)
-	// Pool metrics follow the register archive: each success raises the
-	// normal-account count.
+	// Pool metrics follow the main account pool: each driver completion is a
+	// new normal account.
 	worker.SetPoolMetrics(func() (int, int) {
-		items, _, _, err := store.ListAccounts("", "active")
-		if err != nil {
-			return 0, 0
-		}
-		return len(items), 0
+		return int(completions.Load()), 0
 	})
 	worker.Run()
 
@@ -349,5 +348,37 @@ func TestExtractVerificationCode(t *testing.T) {
 		if got := extractVerificationCode(normalizeMessage(item.message), item.keyword, true); got != item.want {
 			t.Errorf("%s: got %q want %q", item.name, got, item.want)
 		}
+	}
+}
+
+func TestArchiveHidesNonGrokEntries(t *testing.T) {
+	root := t.TempDir()
+	accountsPath := filepath.Join(root, "grok_accounts.json")
+	payload := `{"items":[
+		{"id":"g1","email":"grok@example.com","sso":"sso=1","status":"active","target":"grok"},
+		{"id":"o1","email":"oa@example.com","sso":"at-1","status":"active","target":"openai"},
+		{"id":"l1","email":"legacy@example.com","sso":"sso=2","status":"active"}
+	]}`
+	if err := os.WriteFile(accountsPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := New(filepath.Join(root, "register.json"), accountsPath)
+
+	items, total, _, err := store.ListAccounts("", "")
+	if err != nil || total != 2 || len(items) != 2 {
+		t.Fatalf("openai entries should be hidden from the grok archive: %d %v", total, err)
+	}
+	for _, item := range items {
+		if stringValue(item["email"]) == "oa@example.com" {
+			t.Fatal("openai entry leaked into the grok archive listing")
+		}
+	}
+	exported, err := store.ExportAccounts(nil)
+	if err != nil || len(exported) != 2 {
+		t.Fatalf("export must skip openai entries: %d %v", len(exported), err)
+	}
+	found, err := store.GetAccounts([]string{"o1"})
+	if err != nil || len(found) != 0 {
+		t.Fatalf("openai entry must not sync into the grok pool: %#v %v", found, err)
 	}
 }

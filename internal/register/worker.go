@@ -212,8 +212,12 @@ func (w *Worker) registerOne(target string) (string, error) {
 			item[key] = value
 		}
 	}
-	if _, err = w.store.UpsertAccount(item); err != nil {
-		return result.Email, err
+	// Only grok registrations belong in the grok archive; openai accounts are
+	// mirrored into the main account pool from the caller instead.
+	if strings.EqualFold(target, "grok") {
+		if _, err = w.store.UpsertAccount(item); err != nil {
+			return result.Email, err
+		}
 	}
 	if consumer, ok := w.runtime.MailConsumer(); ok && consumer != nil {
 		if consumeErr := consumer.ConsumeMailbox(result.Email); consumeErr != nil {

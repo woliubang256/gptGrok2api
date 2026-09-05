@@ -594,10 +594,23 @@ func (s *Store) loadAccountsLocked() ([]map[string]any, error) {
 	result := make([]map[string]any, 0, len(list))
 	for _, item := range list {
 		if object, ok := item.(map[string]any); ok {
+			// This archive backs the Grok accounts tab and the Grok probe
+			// flows; openai registrations live in the main account pool.
+			// Entries without a target are legacy grok records.
+			if !isGrokArchiveItem(object) {
+				continue
+			}
 			result = append(result, object)
 		}
 	}
 	return result, nil
+}
+
+// isGrokArchiveItem reports whether an archived registration belongs to the
+// grok target. OpenAI accounts are served by the main account pool instead.
+func isGrokArchiveItem(item map[string]any) bool {
+	target := strings.TrimSpace(stringValue(item["target"]))
+	return target == "" || strings.EqualFold(target, "grok")
 }
 
 func (s *Store) getLocked() map[string]any {
