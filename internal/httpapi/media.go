@@ -107,6 +107,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isOpenAIImageModel(request.Model) {
+		request.Size = normalizeGrokImageSize(request.Size)
 		if _, ok := protocol.AspectRatio(request.Size); !ok {
 			writeError(w, http.StatusBadRequest, "invalid image size", "invalid_request_error")
 			return
@@ -744,9 +745,12 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "n must be between 1 and 2", "invalid_request_error")
 		return
 	}
-	if !isOpenAIImageModel(modelName) && strings.TrimSpace(request.Size) != "" && strings.TrimSpace(request.Size) != "1024x1024" {
-		writeError(w, http.StatusBadRequest, "image edit only supports size 1024x1024", "invalid_request_error")
-		return
+	if !isOpenAIImageModel(modelName) {
+		request.Size = normalizeGrokImageSize(request.Size)
+		if strings.TrimSpace(request.Size) != "1024x1024" {
+			writeError(w, http.StatusBadRequest, "image edit only supports size 1024x1024", "invalid_request_error")
+			return
+		}
 	}
 	if _, ok := model.Find(s.catalog, modelName); !ok || (modelName != "grok-imagine-image-edit" && !isOpenAIImageModel(modelName)) {
 		writeError(w, http.StatusBadRequest, "model is not an image-edit model", "invalid_request_error")
@@ -948,6 +952,16 @@ func mediaPools(modelName string) []string {
 
 func isOpenAIImageModel(modelName string) bool {
 	return strings.EqualFold(strings.TrimSpace(modelName), "gpt-image-2")
+}
+
+// normalizeGrokImageSize resolves the studio's "auto" default (and empty
+// sizes) to grok imaging's square default before aspect validation.
+func normalizeGrokImageSize(size string) string {
+	value := strings.TrimSpace(strings.ToLower(size))
+	if value == "" || value == "auto" {
+		return "1024x1024"
+	}
+	return strings.TrimSpace(size)
 }
 
 func validOpenAIImageSize(size string) bool {
