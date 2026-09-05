@@ -33,8 +33,12 @@ type OpenAIRegistrar struct {
 	FlareSolverr string
 	// SentinelReqURL overrides the chatgpt.com sentinel endpoint (tests).
 	SentinelReqURL string
-	// ProxyURL optionally routes registrations through a fixed proxy.
-	ProxyURL       string
+	// ProxyRef is the register task's proxy reference: "" (global egress),
+	// "direct", "group:<id>" or a literal proxy URL. ResolveProxy maps it to
+	// an actual proxy URL per registration; without it only literal URLs and
+	// "direct" are understood.
+	ProxyRef       string
+	ResolveProxy   func(reference string) string
 	RequestTimeout time.Duration
 
 	mu       sync.Mutex
@@ -60,7 +64,7 @@ func NewOpenAIRegistrar(authBaseURL, platformURL, flaresolverr, proxyURL string,
 		AuthBaseURL:    strings.TrimRight(strings.TrimSpace(authBaseURL), "/"),
 		PlatformURL:    strings.TrimRight(strings.TrimSpace(platformURL), "/"),
 		FlareSolverr:   strings.TrimRight(strings.TrimSpace(flaresolverr), "/"),
-		ProxyURL:       strings.TrimSpace(proxyURL),
+		ProxyRef:       strings.TrimSpace(proxyURL),
 		RequestTimeout: timeout,
 		sessions:       map[string]*openAIRegisterSession{},
 	}
@@ -411,8 +415,19 @@ func (r *OpenAIRegistrar) Complete(ctx context.Context, request RegistrationRequ
 
 // ── protocol steps ─────────────────────────────────────────────────────────
 
+func (r *OpenAIRegistrar) proxyURL() string {
+	if r.ResolveProxy != nil {
+		return strings.TrimSpace(r.ResolveProxy(r.ProxyRef))
+	}
+	switch strings.ToLower(strings.TrimSpace(r.ProxyRef)) {
+	case "", "direct":
+		return ""
+	}
+	return strings.TrimSpace(r.ProxyRef)
+}
+
 func (r *OpenAIRegistrar) newSession() (*openAIRegisterSession, error) {
-	httpSession, err := newOpenAIHTTP(r.ProxyURL, r.FlareSolverr, r.RequestTimeout)
+	httpSession, err := newOpenAIHTTP(r.proxyURL(), r.FlareSolverr, r.RequestTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -646,7 +661,7 @@ func (r *OpenAIRegistrar) exchangeTokens(ctx context.Context, session *openAIReg
 		}
 	}
 	// Legacy form-encoded endpoint with a fresh session.
-	fresh, err := newOpenAIHTTP(r.ProxyURL, r.FlareSolverr, r.RequestTimeout)
+	fresh, err := newOpenAIHTTP(r.proxyURL(), r.FlareSolverr, r.RequestTimeout)
 	if err != nil {
 		return nil, err
 	}

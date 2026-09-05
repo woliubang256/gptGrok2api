@@ -20,6 +20,9 @@ type DriverEnv struct {
 	// ConsumeMailbox retires successful ones. Both may be nil.
 	MailboxPool    func() []string
 	ConsumeMailbox func(email string) error
+	// ResolveProxy maps a register proxy reference ("" / "direct" /
+	// "group:<id>" / literal URL) to an actual proxy URL.
+	ResolveProxy func(reference string) string
 }
 
 // ResolveDrivers picks the executor implementations for a registration batch.
@@ -103,8 +106,9 @@ func resolveRegistrar(registerConfig map[string]any, env DriverEnv, client *http
 	// OpenAI signup is plain HTTP and ships built in; grok still needs the
 	// external protocol driver.
 	if strings.EqualFold(stringValue(registerConfig["target"]), "openai") && env.OpenAIAuth != "" {
-		proxy := stringValue(registerConfig["proxy"])
-		return NewOpenAIRegistrar(env.OpenAIAuth, env.OpenAIPlatform, env.FlareSolverr, proxy, 0)
+		registrar := NewOpenAIRegistrar(env.OpenAIAuth, env.OpenAIPlatform, env.FlareSolverr, stringValue(registerConfig["proxy"]), 0)
+		registrar.ResolveProxy = env.ResolveProxy
+		return registrar
 	}
 	return nil
 }

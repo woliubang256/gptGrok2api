@@ -776,6 +776,31 @@ func (m *Manager) Resolve(fields map[string]any, resource bool) string {
 	return baseURL
 }
 
+// GroupProxyURL returns the next usable node URL of a configured proxy group
+// without engaging the image-node leasing machinery. It backs egress picks for
+// callers that only need a URL, such as the registration task.
+func (m *Manager) GroupProxyURL(groupID string) string {
+	groupID = strings.TrimSpace(groupID)
+	if m == nil || groupID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	group := m.imageGroups[groupID]
+	if group == nil || len(group.nodes) == 0 {
+		return ""
+	}
+	for offset := 1; offset <= len(group.nodes); offset++ {
+		node := group.nodes[(m.imageCursor+offset)%len(group.nodes)]
+		if node.evicted || strings.TrimSpace(node.url) == "" {
+			continue
+		}
+		m.imageCursor = (m.imageCursor + offset) % len(group.nodes)
+		return node.url
+	}
+	return ""
+}
+
 func (m *Manager) Snapshot() map[string]any {
 	if m == nil {
 		return map[string]any{"mode": "direct", "count": 0}

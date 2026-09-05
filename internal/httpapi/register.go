@@ -116,7 +116,11 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		if target == "" {
 			target = "grok"
 		}
-		mail, captcha, registrar := registerruntime.ResolveDrivers(config, s.registerEnv, s.requestClient)
+		worker := registerruntime.NewWorker(s.registerStore, s.registerRuntime)
+		worker.SetPoolMetrics(s.registerPoolMetrics)
+		env := s.registerEnv
+		env.ResolveProxy = s.resolveRegisterProxy
+		mail, captcha, registrar := registerruntime.ResolveDrivers(config, env, s.requestClient)
 		s.registerRuntime.SetDrivers(mail, captcha, registrar)
 		if err := s.registerRuntime.Start(target); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -126,8 +130,6 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 			})
 			return
 		}
-		worker := registerruntime.NewWorker(s.registerStore, s.registerRuntime)
-		worker.SetPoolMetrics(s.registerPoolMetrics)
 		go worker.Run()
 	} else {
 		s.registerRuntime.Stop()
@@ -138,6 +140,21 @@ func (s *Server) setRegisterEnabled(w http.ResponseWriter, enabled bool) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"register": value})
+}
+
+// resolveRegisterProxy maps the register task's proxy reference to an actual
+// proxy URL: "" (global egress), "direct", "group:<id>" or a literal URL.
+func (s *Server) resolveRegisterProxy(reference string) string {
+	value := strings.ToLower(strings.TrimSpace(reference))
+	switch {
+	case value == "" || value == "global" || value == "global:":
+		return s.proxyManager.Resolve(nil, false)
+	case value == "direct":
+		return ""
+	case strings.HasPrefix(value, "group:"):
+		return s.proxyManager.GroupProxyURL(strings.TrimSpace(reference[len("group:"):]))
+	}
+	return strings.TrimSpace(reference)
 }
 
 // registerPoolMetrics mirrors the legacy account-pool evaluation for the

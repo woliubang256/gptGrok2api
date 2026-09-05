@@ -107,8 +107,11 @@ func TestOpenAIRegistrarFullFlow(t *testing.T) {
 	defer sentinelServer.Close()
 	// The code wait happens outside the registrar; keep a stub mail endpoint
 	// only to satisfy the worker contract if used.
-	registrar := NewOpenAIRegistrar(authServer.URL, "https://platform.openai.com", "", "", 30*time.Second)
+	registrar := NewOpenAIRegistrar(authServer.URL, "https://platform.openai.com", "", "direct", 30*time.Second)
 	registrar.SentinelReqURL = sentinelServer.URL + "/backend-api/sentinel/req"
+	if registrar.proxyURL() != "" {
+		t.Fatalf("direct reference must mean no proxy, got %q", registrar.proxyURL())
+	}
 
 	request := RegistrationRequest{Target: "openai", Email: "fresh@example.com"}
 	if err := registrar.Start(context.Background(), request); err != nil {
@@ -173,5 +176,27 @@ func TestSentinelPoWToken(t *testing.T) {
 	requirements := generator.requirementsToken()
 	if !strings.HasPrefix(requirements, "gAAAAAC") {
 		t.Fatalf("unexpected requirements token shape: %s", requirements[:20])
+	}
+}
+
+func TestOpenAIRegistrarProxyReference(t *testing.T) {
+	registrar := NewOpenAIRegistrar("https://auth.openai.com", "https://platform.openai.com", "", "", time.Second)
+	if registrar.proxyURL() != "" {
+		t.Fatalf("global reference must mean default egress, got %q", registrar.proxyURL())
+	}
+	registrar.ProxyRef = "group:abc"
+	registrar.ResolveProxy = func(reference string) string {
+		if reference == "group:abc" {
+			return "http://127.0.0.1:7890"
+		}
+		return ""
+	}
+	if registrar.proxyURL() != "http://127.0.0.1:7890" {
+		t.Fatalf("group reference should resolve through the hook, got %q", registrar.proxyURL())
+	}
+	registrar.ResolveProxy = nil
+	registrar.ProxyRef = "http://user:pass@proxy.example.com:8080"
+	if registrar.proxyURL() != "http://user:pass@proxy.example.com:8080" {
+		t.Fatalf("literal proxy URL must pass through, got %q", registrar.proxyURL())
 	}
 }
