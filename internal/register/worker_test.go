@@ -199,6 +199,68 @@ func TestCloudflareTempEmailWaitsForCode(t *testing.T) {
 	}
 }
 
+func TestOpenAITargetNeedsNoCaptcha(t *testing.T) {
+	root := t.TempDir()
+	store := New(filepath.Join(root, "register.json"), filepath.Join(root, "grok_accounts.json"))
+
+	var completeToken atomic.Value
+	mailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": "112233"})
+	}))
+	defer mailServer.Close()
+	driverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			_, _ = w.Write([]byte(`{}`))
+		case "/complete":
+			var payload struct {
+				CaptchaToken string `json:"captcha_token"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			completeToken.Store(payload.CaptchaToken)
+			_ = json.NewEncoder(w).Encode(map[string]any{"account": map[string]any{"email": "oa@example.com", "sso": "access-1", "status": "active"}})
+		}
+	}))
+	defer driverServer.Close()
+
+	if _, err := store.Update(map[string]any{
+		"target":       "openai",
+		"mailbox_pool": []any{"oa@example.com"},
+		"total":        1,
+		"threads":      1,
+		// Placeholder UI captcha config must stay unused for openai.
+		"grok": map[string]any{"provider": "yescaptcha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env := DriverEnv{
+		MailURL: mailServer.URL, DriverURL: driverServer.URL,
+		MailboxPool: store.MailboxPool, ConsumeMailbox: store.ConsumeMailbox,
+	}
+	mail, captcha, registrar := ResolveDrivers(store.Get(), env, nil)
+	if captcha != nil {
+		t.Fatal("openai target must not wire a captcha solver")
+	}
+	runtime := NewRuntime()
+	runtime.SetDrivers(mail, captcha, registrar)
+	if !runtime.Ready("openai") {
+		t.Fatal("openai should be ready with mail and registrar only")
+	}
+	if err := runtime.Start("openai"); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	NewWorker(store, runtime).Run()
+
+	if token, _ := completeToken.Load().(string); token != "" {
+		t.Fatalf("openai complete should carry no captcha token, got %q", token)
+	}
+	stats, _ := store.Get()["stats"].(map[string]any)
+	if intValue(stats["success"]) != 1 {
+		logs, _ := json.Marshal(store.Get()["logs"])
+		t.Fatalf("unexpected stats: %#v; logs=%s", stats, logs)
+	}
+}
+
 func TestExtractVerificationCode(t *testing.T) {
 	cases := []struct {
 		name    string

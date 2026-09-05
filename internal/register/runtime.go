@@ -99,10 +99,14 @@ func (r *Runtime) Ready(target string) bool {
 }
 
 func (r *Runtime) ReadyLocked(target string) bool {
-	if !validTarget(target) {
-		return false
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "openai":
+		// OpenAI signup is a plain HTTP email-code flow: no captcha involved.
+		return r.Mail != nil && r.Registrar != nil
+	case "grok":
+		return r.Mail != nil && r.Captcha != nil && r.Registrar != nil
 	}
-	return r.Mail != nil && r.Captcha != nil && r.Registrar != nil
+	return false
 }
 
 func validTarget(target string) bool {
@@ -135,7 +139,7 @@ func (r *Runtime) Execute(ctx context.Context, request RegistrationRequest) (Reg
 	r.mu.RLock()
 	mail, captcha, registrar := r.Mail, r.Captcha, r.Registrar
 	r.mu.RUnlock()
-	if mail == nil || captcha == nil || registrar == nil {
+	if mail == nil || registrar == nil {
 		return RegistrationResult{}, ErrExecutorNotConfigured
 	}
 	mailbox, err := mail.CreateMailbox(ctx, request.Target)
@@ -150,9 +154,12 @@ func (r *Runtime) Execute(ctx context.Context, request RegistrationRequest) (Reg
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	token, err := captcha.Solve(ctx, request.Target)
-	if err != nil {
-		return RegistrationResult{}, err
+	token := ""
+	if captcha != nil {
+		token, err = captcha.Solve(ctx, request.Target)
+		if err != nil {
+			return RegistrationResult{}, err
+		}
 	}
 	result, err := registrar.Complete(ctx, request, code, token)
 	if err == nil && result.Email == "" {

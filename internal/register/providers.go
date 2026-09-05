@@ -29,7 +29,12 @@ type DriverEnv struct {
 //	driver:   grok.driver_url, else GO_REGISTER_DRIVER_URL (two-phase HTTP)
 func ResolveDrivers(registerConfig map[string]any, env DriverEnv, client *http.Client) (MailboxSource, CaptchaSolver, Registrar) {
 	mail := resolveMailSource(registerConfig, env, client)
-	captcha := resolveCaptchaSolver(registerConfig, env, client)
+	// OpenAI signup never solves captchas; leave the slot empty even when the
+	// UI carries a placeholder provider config.
+	var captcha CaptchaSolver
+	if !strings.EqualFold(stringValue(registerConfig["target"]), "openai") {
+		captcha = resolveCaptchaSolver(registerConfig, env, client)
+	}
 	registrar := resolveRegistrar(registerConfig, env, client)
 	return mail, captcha, registrar
 }
