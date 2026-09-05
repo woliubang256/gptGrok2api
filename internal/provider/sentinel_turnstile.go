@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// SolveSentinelTurnstileToken exposes the ChatGPT sentinel turnstile VM to
+// other packages such as the registration flow.
+func SolveSentinelTurnstileToken(dx, p string) (string, error) {
+	return solveSentinelTurnstileToken(dx, p)
+}
+
 // solveSentinelTurnstileToken mirrors the small operation VM used by
 // ChatGPT's sentinel endpoint. The dx value is an XOR-obfuscated operation
 // queue; it is not a browser cookie and must be computed for the same p value.

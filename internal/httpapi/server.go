@@ -142,6 +142,9 @@ func New(cfg config.Config) *Server {
 		CaptchaURL:     cfg.RegisterCaptchaURL,
 		DriverURL:      cfg.RegisterDriverURL,
 		DriverKey:      cfg.RegisterDriverKey,
+		OpenAIAuth:     cfg.OpenAIAuthBaseURL,
+		OpenAIPlatform: cfg.OpenAIPlatformBaseURL,
+		FlareSolverr:   cfg.FlareSolverrURL,
 		MailboxPool:    server.registerStore.MailboxPool,
 		ConsumeMailbox: server.registerStore.ConsumeMailbox,
 	}

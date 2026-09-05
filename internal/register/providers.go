@@ -5,16 +5,20 @@ import (
 	"strings"
 )
 
-// DriverEnv carries the GO_REGISTER_* environment fallbacks plus the store
+// DriverEnv carries the GO_REGISTER_* environment fallbacks plus the OpenAI
+// endpoints and FlareSolverr URL the built-in registrar needs, and the store
 // hooks the env mailbox source needs for the register mailbox_pool.
 type DriverEnv struct {
-	MailURL    string
-	CaptchaURL string
-	DriverURL  string
-	DriverKey  string
+	MailURL       string
+	CaptchaURL    string
+	DriverURL     string
+	DriverKey     string
+	OpenAIAuth    string
+	OpenAIPlatform string
+	FlareSolverr  string
 	// MailboxPool supplies unused addresses to the env mail source and
 	// ConsumeMailbox retires successful ones. Both may be nil.
-	MailboxPool   func() []string
+	MailboxPool    func() []string
 	ConsumeMailbox func(email string) error
 }
 
@@ -93,8 +97,14 @@ func resolveRegistrar(registerConfig map[string]any, env DriverEnv, client *http
 		driverURL = firstNonEmptyText(stringValue(grok["driver_url"]), driverURL)
 		driverKey = firstNonEmptyText(stringValue(grok["driver_key"]), driverKey)
 	}
-	if driverURL == "" {
-		return nil
+	if driverURL != "" {
+		return NewHTTPRegistrar(driverURL, driverKey, client)
 	}
-	return NewHTTPRegistrar(driverURL, driverKey, client)
+	// OpenAI signup is plain HTTP and ships built in; grok still needs the
+	// external protocol driver.
+	if strings.EqualFold(stringValue(registerConfig["target"]), "openai") && env.OpenAIAuth != "" {
+		proxy := stringValue(registerConfig["proxy"])
+		return NewOpenAIRegistrar(env.OpenAIAuth, env.OpenAIPlatform, env.FlareSolverr, proxy, 0)
+	}
+	return nil
 }

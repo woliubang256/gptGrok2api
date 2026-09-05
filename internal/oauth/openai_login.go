@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	OpenAIOAuthClientID = "app_2SKx67EdpoN0G6j64fRvigXD"
+	OpenAIOAuthClientID = "app_2SKx67EdpoN0G6j64rFvigXD"
 	OpenAIOAuthAudience = "https://api.openai.com/v1"
 	OpenAIOAuthRedirect = "https://platform.openai.com/auth/callback"
 	OpenAIAuth0Client   = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9"
