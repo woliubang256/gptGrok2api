@@ -775,7 +775,15 @@ func (s *Server) runImageTask(task *imageTaskState, authHeader, apiKey string) {
 		req.Header.Set("X-API-Key", apiKey)
 	}
 	recorder := &responseCapture{header: make(http.Header)}
-	s.imageGenerations(recorder, req)
+	// Route through the request monitor so studio tasks produce call logs like
+	// direct API traffic; the internal request never traverses the mux.
+	s.withRequestMonitor(recorder, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/images/edits") {
+			s.imageEdits(w, r)
+			return
+		}
+		s.imageGenerations(w, r)
+	}))
 	s.imageTaskMu.Lock()
 	defer s.imageTaskMu.Unlock()
 	task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
