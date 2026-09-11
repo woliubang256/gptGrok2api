@@ -951,7 +951,7 @@ func mediaPools(modelName string) []string {
 }
 
 func isOpenAIImageModel(modelName string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelName), "gpt-image-2")
+	return model.IsOpenAIImage(modelName)
 }
 
 // normalizeGrokImageSize resolves the studio's "auto" default (and empty
