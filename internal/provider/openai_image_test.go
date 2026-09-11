@@ -465,6 +465,8 @@ func TestOpenAIImageGenerationNeverDownloadsUserAttachment(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"conversation_id\":\"conversation-source-filter\",\"message\":{\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"multimodal_text\",\"parts\":[{\"content_type\":\"image_asset_pointer\",\"asset_pointer\":\"file-service://" + inputFileID + "\"}]}}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"message\":{\"author\":{\"role\":\"tool\"},\"metadata\":{\"async_task_type\":\"image_gen\"},\"content\":{\"content_type\":\"multimodal_text\",\"parts\":[{\"content_type\":\"image_asset_pointer\",\"asset_pointer\":\"file-service://" + generatedFileID + "\"}]}}}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case "/backend-api/conversation/conversation-source-filter":
+			writeGeneratedImageConversation(w, generatedFileID)
 		case "/backend-api/files/" + inputFileID + "/download":
 			inputDownloadAttempts.Add(1)
 			http.Error(w, "input image must not be downloaded as output", http.StatusInternalServerError)
